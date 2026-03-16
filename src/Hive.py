@@ -192,45 +192,50 @@ class Hive():
         
 
     def Reverse(self, Psum):
-        import math  # 引入 math 库进行向上取整
-        # Psum is a list of Psums in the shape of [self.t, current_e, ofmapwidth*p*n]
-        index = 0
+        import math
         ofmapWidth = self.Pictures.shape[2] - self.FilterWeights.shape[2] + 1
-        OfMaps = np.zeros( (self.Pictures.shape[0], self.FilterWeights.shape[0], 
-                            ofmapWidth, ofmapWidth*self.n*self.p ))
         
-        # 修复1：必须与 __SetPasses__ 中的总切片数保持一致
+        # 预分配完整的输出矩阵，形状为: (Batch, Out_Channels, Ofmap_H, Ofmap_W * ...)
+        OfMaps = np.zeros((self.Pictures.shape[0], self.FilterWeights.shape[0], 
+                           ofmapWidth, ofmapWidth*self.n*self.p))
+        
         total_passes = math.ceil(ofmapWidth / self.e)
+        num_channels = int(self.Pictures.shape[1] / self.r)
+        num_ofmaps = int(self.FilterWeights.shape[0] / self.t)
         
-        for batch in range( self.Pictures.shape[0] ):
-            ofMap = []
-            for ofmap in range( int(self.FilterWeights.shape[0]/self.t) ):
-                SumRow = []
-                for channel in range( int(self.Pictures.shape[1]/self.r) ): 
-                    head = 0
-                    PsumRow = []
-                    # 修复2：遍历所有的 Pass，而不是截断后的整数
-                    for e in range( total_passes ):
-                        PsumRow.append( np.array(Psum[index]) )
-                        index += 1
+        index = 0
+        for batch in range(self.Pictures.shape[0]):
+            # 为当前 Batch 创建一个累加器缓存 (对应这批数据的完整输出特征图)
+            batch_accumulator = np.zeros((self.FilterWeights.shape[0], 
+                                          ofmapWidth, 
+                                          ofmapWidth*self.n*self.p))
+            
+            # 这里的循环顺序现在完美对齐了 __SetPasses__ 中的任务分发顺序
+            for channel in range(num_channels):
+                for ofmap in range(num_ofmaps):
                     
-                    # 将所有 Pass 算出的块在高度维度（axis=1）上拼接起来
-                    PsumRow = np.concatenate(PsumRow, axis=1)
+                    # 1. 收集当前 (channel, ofmap) 组合下，所有的宽度切片 (e)
+                    width_chunks = []
+                    for e in range(total_passes):
+                        width_chunks.append(np.array(Psum[index]))
+                        index += 1  # 顺序消费 Psum 列表
+                        
+                    # 2. 沿着宽度维度 (axis=1) 将切片拼接为完整的一行
+                    # 拼接后的 shape 应为: (self.t, ofmapWidth, ofmapWidth*self.n*self.p)
+                    stitched_row = np.concatenate(width_chunks, axis=1)
                     
-                    # 拼接后的实际尺寸完美通过原代码的断言检查
-                    assert PsumRow.shape == (self.t, ofmapWidth, 
-                           ofmapWidth*self.n*self.p)
-                    SumRow.append(PsumRow)
+                    # 3. 累加到对应的输出通道 (Ofmap) 块中
+                    # 由于最外层是 channel 循环，这里的 += 完美实现了“各个输入通道结果的累加”
+                    start_t = ofmap * self.t
+                    end_t = start_t + self.t
+                    batch_accumulator[start_t:end_t, :, :] += stitched_row
                     
-                # TODO: let's ignore sending back psum to PEs for now
-                SumRow = np.array(SumRow).sum(axis=0)
-                ofMap.append(SumRow)
-            OfMaps[batch] = np.concatenate(ofMap)
+            # 将当前 batch 处理好的特征图存入最终结果
+            OfMaps[batch] = batch_accumulator
             
         self.__SetOfMaps__(OfMaps)
         self.__ReverseFmapReuse__()
         self.__ReverseFilterReuse__()
-        
 
     def __ReverseFmapReuse__(self):
         s = np.array(self.OfMaps.shape)

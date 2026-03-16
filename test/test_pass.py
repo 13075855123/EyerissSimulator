@@ -2,8 +2,14 @@ import numpy as np
 import os
 import sys
 
-# 确保能找到 src 模块
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+# 获取当前脚本所在目录 (test文件夹)
+current_dir = os.path.dirname(os.path.abspath(__file__))
+# 向上退一级，获取项目根目录 (EyerissSimulator文件夹)
+project_root = os.path.dirname(current_dir)
+
+# 将项目根目录加入到 Python 的搜索路径中
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 from src.EyerissF import EyerissF
 from src.Hive import Hive
@@ -54,17 +60,57 @@ def run_pass_analysis():
     print(f"    r (Channel并行数): {hive.r}")
     print(f"    e (输入行切片):   {hive.e}")
 
+# ==========================================
+    # 执行 Mapping 并生成 Passes
     # ==========================================
-    # 分析并保存前几个 Pass
+    print(">>> 3. 调用 Hive.CreatePasses 进行任务切分...")
+    passes = hive.CreatePasses(pictures, weights)
+    
+    print(f"\n[结果] 总共生成了 {len(passes)} 个 Pass")
+    print(f"[映射参数] Hive 自动计算的 Mapping 参数:")
+    print(f"    t (Filter并行数/12行PE阵列卷积核并行数): {hive.t}")
+    print(f"    r (Channel并行数): {hive.r}")
+    print(f"    e (输入行切片):   {hive.e}")
+
+    # # ==========================================
+    # # 4. 简单直接地检验每 32 个 Pass 的 pass_pic 是否相同
+    # # ==========================================
+    # chunk_size = 32
+    # all_identical = True
+
+    # print(f"\n>>> 4. 检验每 {chunk_size} 个 Pass 的 pass_pic 是否完全相同...")
+    
+    # # 按每 32 个 Pass 为一块进行遍历
+    # for i in range(0, len(passes), chunk_size):
+    #     chunk = passes[i:i + chunk_size]
+        
+    #     # 提取这 32 个 Pass 中的第一个 pic_pass 作为基准
+    #     base_pic = chunk[0][0]
+        
+    #     # 检验这一块里的所有 pic_pass 是否都跟基准长得一样
+    #     for j, (pic, weight) in enumerate(chunk):
+    #         if not np.array_equal(pic, base_pic):
+    #             all_identical = False
+    #             print(f"    ❌ 发现不同！Pass {i+j} 的图像矩阵与 Pass {i} 不一致。")
+    #             break
+                
+    #     if not all_identical:
+    #         break
+
+    # if all_identical:
+    #     print(f"    ✅ 检验通过！总共 {len(passes)} 个 Pass，严格满足每 {chunk_size} 个 Pass 的 pic_pass 矩阵完全相同！")
+
+    # ==========================================
+    # 5. 分析并保存前几个 Pass
     # ==========================================
     save_dir = "saved_passes"
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
         
-    num_to_save = 3 # 保存前两个作为示例
+    num_to_save = 3 # 保存前3个作为示例
     
     for i in range(min(num_to_save, len(passes))):
-        print(f"\n--- 分析 Pass {i} ---")
+        print(f"\n--- 分析并保存 Pass {i} ---")
         pic_pass, weight_pass = passes[i]
         
         print(f"    PicPass Shape:    {pic_pass.shape}")
@@ -82,7 +128,8 @@ def run_pass_analysis():
         np.save(weight_filename, weight_pass)
         print(f"    已保存到: {pic_filename} 和 {weight_filename}")
 
-    print(f"\n>>> 分析完成。请检查 '{save_dir}' 文件夹查看保存的文件。")
+    print(f"\n>>> 运行完成。请检查 '{save_dir}' 文件夹查看保存的 .npy 文件。")
+
 
 if __name__ == "__main__":
     run_pass_analysis()
