@@ -12,6 +12,11 @@ class PE:
         
         self.myPsum = 0
         self.inputPsum = 0
+        self.stride = 1  # 🌟 新增：初始化 stride
+    
+    # 🌟 新增：设置 stride 的方法
+    def SetStride(self, stride):
+        self.stride = stride
     
     def SetPEState(self, State):
         self.PEState = State
@@ -39,7 +44,8 @@ class PE:
         
     def __Conv1D__(self, ImageRow, FilterRow):
         PsumRow = list()
-        for x in range(len(ImageRow) - len(FilterRow) + 1):
+        # 🌟 修改：range 函数增加 self.stride 作为步长
+        for x in range(0, len(ImageRow) - len(FilterRow) + 1, self.stride):
             y = x + len(FilterRow)
             r = ImageRow[x:y] * FilterRow
             PsumRow.append(r.sum())

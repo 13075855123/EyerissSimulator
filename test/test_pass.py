@@ -39,9 +39,13 @@ def run_pass_analysis():
     OUT_CHANNELS = 64
     KERNEL_H, KERNEL_W = 3, 3
     
+    # 🌟 新增：定义测试的步长
+    STRIDE = 2
+
     print(f">>> 2. 生成随机数据...")
     print(f"    Input Shape: ({BATCH}, {IN_CHANNELS}, {INPUT_H}, {INPUT_W})")
     print(f"    Weight Shape: ({OUT_CHANNELS}, {IN_CHANNELS}, {KERNEL_H}, {KERNEL_W})")
+    print(f"    Stride: {STRIDE}")
     
     # 随机生成 uint8 类型的图像数据和权重数据
     pictures = np.random.randint(0, 10, (BATCH, IN_CHANNELS, INPUT_H, INPUT_W))
@@ -50,59 +54,23 @@ def run_pass_analysis():
     # ==========================================
     # 执行 Mapping 并生成 Passes
     # ==========================================
-    print(">>> 3. 调用 Hive.CreatePasses 进行任务切分...")
-    # 这一步会自动计算 Mapping 参数 (m, n, p, q, r, t) 并切分数据
-    passes = hive.CreatePasses(pictures, weights)
+    print("\n>>> 3. 调用 Hive.CreatePasses 进行任务切分...")
     
-    print(f"\n[结果] 总共生成了 {len(passes)} 个 Pass")
-    print(f"[映射参数] Hive 自动计算的 Mapping 参数:")
-    print(f"    t (Filter并行数): {hive.t}")
-    print(f"    r (Channel并行数): {hive.r}")
-    print(f"    e (输入行切片):   {hive.e}")
-
-# ==========================================
-    # 执行 Mapping 并生成 Passes
-    # ==========================================
-    print(">>> 3. 调用 Hive.CreatePasses 进行任务切分...")
+    # 🌟 新增：在执行切分前，告诉调度器当前的步长
+    hive.stride = STRIDE
+    # 这一步会自动计算 Mapping 参数 (m, n, p, q, r, t) 并切分数据
     passes = hive.CreatePasses(pictures, weights)
     
     print(f"\n[结果] 总共生成了 {len(passes)} 个 Pass")
     print(f"[映射参数] Hive 自动计算的 Mapping 参数:")
     print(f"    t (Filter并行数/12行PE阵列卷积核并行数): {hive.t}")
     print(f"    r (Channel并行数): {hive.r}")
-    print(f"    e (输入行切片):   {hive.e}")
-
-    # # ==========================================
-    # # 4. 简单直接地检验每 32 个 Pass 的 pass_pic 是否相同
-    # # ==========================================
-    # chunk_size = 32
-    # all_identical = True
-
-    # print(f"\n>>> 4. 检验每 {chunk_size} 个 Pass 的 pass_pic 是否完全相同...")
-    
-    # # 按每 32 个 Pass 为一块进行遍历
-    # for i in range(0, len(passes), chunk_size):
-    #     chunk = passes[i:i + chunk_size]
-        
-    #     # 提取这 32 个 Pass 中的第一个 pic_pass 作为基准
-    #     base_pic = chunk[0][0]
-        
-    #     # 检验这一块里的所有 pic_pass 是否都跟基准长得一样
-    #     for j, (pic, weight) in enumerate(chunk):
-    #         if not np.array_equal(pic, base_pic):
-    #             all_identical = False
-    #             print(f"    ❌ 发现不同！Pass {i+j} 的图像矩阵与 Pass {i} 不一致。")
-    #             break
-                
-    #     if not all_identical:
-    #         break
-
-    # if all_identical:
-    #     print(f"    ✅ 检验通过！总共 {len(passes)} 个 Pass，严格满足每 {chunk_size} 个 Pass 的 pic_pass 矩阵完全相同！")
+    print(f"    e (本次Pass负责的输出特征图行数):   {hive.e}")
 
     # ==========================================
-    # 5. 分析并保存前几个 Pass
+    # 4. 分析并保存前几个 Pass
     # ==========================================
+    print("\n>>> 4. 提取并保存前几个 Pass 供分析...")
     save_dir = "saved_passes"
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
@@ -129,7 +97,6 @@ def run_pass_analysis():
         print(f"    已保存到: {pic_filename} 和 {weight_filename}")
 
     print(f"\n>>> 运行完成。请检查 '{save_dir}' 文件夹查看保存的 .npy 文件。")
-
 
 if __name__ == "__main__":
     run_pass_analysis()

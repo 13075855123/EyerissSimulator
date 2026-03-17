@@ -9,10 +9,12 @@ class EyerissF:
         self.PEArrayWidth = conf.EyerissWidth
         self.__InitPEs__()
 
-    def Conv2d(self, Pass, OfMapWidth, n, p, q, showStates=0):
+    # 🌟 修改：在参数列表中加入 stride=1
+    def Conv2d(self, Pass, OfMapWidth, n, p, q, showStates=0, stride=1):
         Pictures, FilterWeights = Pass
+        # 🌟 修改：向下传递 stride
         PESetH, PESetW, FilterNum, ChannelNum = self.__DataDeliver__(
-                        Pictures, FilterWeights, n, p, q)
+                        Pictures, FilterWeights, n, p, q, stride)
         if showStates: self.__ShowStates__()
         self.__run__()
         self.__PsumTransportLN__(PESetH, PESetW, FilterNum, ChannelNum, n, p)
@@ -35,29 +37,30 @@ class EyerissF:
                 self.PEArray[ColumnELement][RowElement].SetPEState(State)
 
 
-    def __DataDeliver__(self, Pictures, FilterWeights, n, p, q):
-        # put the pic and filter row data into PEArray
-        #TODO: change this function to network.DataDeliever()
+    # 🌟 修改：在参数列表中加入 stride=1
+    def __DataDeliver__(self, Pictures, FilterWeights, n, p, q, stride=1):
         PESetH = FilterWeights.shape[2]
-        PESetW = Pictures.shape[1] - FilterWeights.shape[2] + 1
-        #TODO: let's assume PESetW >=PEArrayWidth for now
-        # because current information is not enough to describe 2D mapping
-        # we might introduce more parameters (tx, ty, rx, rz) in the future.
+        # 🌟 修改：输出行数 (PESetW) 的计算需要考虑 stride
+        PESetW = (Pictures.shape[1] - FilterWeights.shape[2]) // stride + 1 
         FilterNum = FilterWeights.shape[0]
         ChannelNum = Pictures.shape[0]
-        for f in range(FilterNum):#filters
-            for c in range(ChannelNum):#channel
+        
+        for f in range(FilterNum):
+            for c in range(ChannelNum):
                 for h in range(PESetH):
                     for w in range(PESetW):
                         x = w % self.PEArrayWidth
                         offsetY = int(w/self.PEArrayWidth)*PESetH*ChannelNum*FilterNum
                         y = offsetY+(f*ChannelNum+c)*PESetH+h
                         self.PEArray[y][x].SetFilterRow(FilterWeights[f][c][h])
-                        self.PEArray[y][x].SetImageRow(Pictures[c][h+w])
+                        # 🌟 修改：分配给 PE 的图像行索引变成 h + w * stride
+                        self.PEArray[y][x].SetImageRow(Pictures[c][h + w * stride])
                         self.PEArray[y][x].SetChannelNum(q)
                         self.PEArray[y][x].SetFilterNum(p)
                         self.PEArray[y][x].SetImageNum(n)
                         self.PEArray[y][x].SetPEState(conf.ConvState)
+                        # 🌟 新增：将 stride 赋予当前 PE
+                        self.PEArray[y][x].SetStride(stride) 
         return PESetH, PESetW, FilterNum, ChannelNum
                   
     def __DataCollect__(self, PESetH, PESetW, FilterNum, ChannelNum, OfMapWidth, n, p):

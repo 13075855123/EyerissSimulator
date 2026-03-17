@@ -3,7 +3,7 @@ import os
 
 # 这里替换成你想查看的文件路径
 # 比如查看 filter 文件夹下的 convnet.c1.weight.npy
-file_path = 'saved_passes\pass_1_pic.npy' 
+file_path = 'saved_passes\pass_2_pic.npy' 
 
 if os.path.exists(file_path):
     # 加载数据

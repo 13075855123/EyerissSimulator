@@ -11,6 +11,7 @@ class Hive():
         self.EyerissF = EyerissF
         self.RLE = IO2.RLE(RateNeed = 0)
         self.GLB = conf.GLB
+        self.stride = 1  # 🌟 新增：默认步长为 1
         #TODO: read/write communications between GLB, PEArray, individual is missing
         
         #maybe wrap it to a separate class
@@ -30,11 +31,17 @@ class Hive():
     def PostProcess(self, OfMaps):
         return self.RLE.Compress(OfMaps)
         
-    def Conv2d(self, Pictures=0, FilterWeights=0):
+    # 🌟 修改：接受 stride 参数
+    def Conv2d(self, Pictures=0, FilterWeights=0, stride=1):
+        self.stride = stride
         Pictures, FilterWeights = self.PreProcess(Pictures, FilterWeights)
         Passes = self.CreatePasses(Pictures, FilterWeights)
-        ofmapWidth = Pictures.shape[2] - FilterWeights.shape[2] + 1
-        Psum = [self.EyerissF.Conv2d(ps, ofmapWidth, self.n, self.p, self.q) for ps in Passes]
+        
+        # 🌟 修改：使用形状的宽度维度 [3] 及 stride 来计算输出特征图的宽度
+        ofmapWidth = (Pictures.shape[3] - FilterWeights.shape[3]) // self.stride + 1
+        
+        # 🌟 修改：向 EyerissF.Conv2d 传递 stride
+        Psum = [self.EyerissF.Conv2d(ps, ofmapWidth, self.n, self.p, self.q, stride=self.stride) for ps in Passes]
         self.Reverse(Psum)
         OfMaps = self.Output()
         return self.PostProcess(OfMaps)
@@ -61,28 +68,26 @@ class Hive():
         import math
         Passes = []
         for batch in range( self.Pictures.shape[0] ):
-            # ==========================================
-            # 🚀 核心改动：循环重排 (Loop Interchange)
-            # 将 channel 循环放在外层，ofmap 循环放在内层
-            # 从而完美实现“特征图驻留，卷积核轮换”的时间复用！
-            # ==========================================
             for channel in range( int(self.Pictures.shape[1]/self.r) ): 
                 for ofmap in range( int(self.FilterWeights.shape[0]/self.t) ):
                     
-                    ofmapWidth = self.Pictures.shape[2] - self.FilterWeights.shape[2] + 1
+                    # 🌟 修改：考虑 stride 计算输出高度
+                    ofmapHeight = (self.Pictures.shape[2] - self.FilterWeights.shape[2]) // self.stride + 1
                     head = 0
-                    total_passes = math.ceil(ofmapWidth / self.e)
+                    total_passes = math.ceil(ofmapHeight / self.e)
                     
                     for e in range( total_passes ):
-                        current_e = min(self.e, ofmapWidth - e * self.e)
-                        ifmapEachPass = current_e + self.FilterWeights.shape[2] - 1
+                        current_e = min(self.e, ofmapHeight - e * self.e)
+                        # 🌟 修改：当前切片需要的输入行数必须由 stride 计算而来
+                        ifmapEachPass = (current_e - 1) * self.stride + self.FilterWeights.shape[2]
                         tail = head + ifmapEachPass
                         
                         PicPass = self.Pictures[batch, channel*self.r:(channel+1)*self.r, head:tail, :]
                         WeightPass = self.FilterWeights[ofmap*self.t:(ofmap+1)*self.t, channel*self.r:(channel+1)*self.r, :, :]
                         Passes.append([PicPass, WeightPass])
                         
-                        head += self.e 
+                        # 🌟 修改：下一轮切片的起点跳跃必须乘以 stride
+                        head += self.e * self.stride
         return Passes
     
     def __SetMappingParameters__(self, m=0, n=0, e=0, p=0, q=0, r=0, t=0):
@@ -97,7 +102,7 @@ class Hive():
     def __PEArrayMapping__(self):
         #TODO: also consider stride
         PESetHeight = self.FilterWeights.shape[2] #filter height
-        PESetWidth = self.Pictures.shape[2] - self.FilterWeights.shape[2] + 1 #ofmap height
+        PESetWidth = (self.Pictures.shape[2] - self.FilterWeights.shape[2]) // self.stride + 1 #ofmap height
         #Eyeriss only support filter height smaller than PE array height
         assert PESetHeight <= conf.EyerissHeight
         
@@ -193,44 +198,37 @@ class Hive():
 
     def Reverse(self, Psum):
         import math
-        ofmapWidth = self.Pictures.shape[2] - self.FilterWeights.shape[2] + 1
+        # 🌟 修改：分别计算输出特征图的高度和宽度
+        ofmapHeight = (self.Pictures.shape[2] - self.FilterWeights.shape[2]) // self.stride + 1
+        ofmapWidth = (self.Pictures.shape[3] - self.FilterWeights.shape[3]) // self.stride + 1
         
-        # 预分配完整的输出矩阵，形状为: (Batch, Out_Channels, Ofmap_H, Ofmap_W * ...)
+        # 预分配完整的输出矩阵，注意传入高度和宽度
         OfMaps = np.zeros((self.Pictures.shape[0], self.FilterWeights.shape[0], 
-                           ofmapWidth, ofmapWidth*self.n*self.p))
+                           ofmapHeight, ofmapWidth*self.n*self.p))
         
-        total_passes = math.ceil(ofmapWidth / self.e)
+        total_passes = math.ceil(ofmapHeight / self.e) # 高度方向的总分片数
         num_channels = int(self.Pictures.shape[1] / self.r)
         num_ofmaps = int(self.FilterWeights.shape[0] / self.t)
         
         index = 0
         for batch in range(self.Pictures.shape[0]):
-            # 为当前 Batch 创建一个累加器缓存 (对应这批数据的完整输出特征图)
             batch_accumulator = np.zeros((self.FilterWeights.shape[0], 
-                                          ofmapWidth, 
+                                          ofmapHeight, 
                                           ofmapWidth*self.n*self.p))
             
-            # 这里的循环顺序现在完美对齐了 __SetPasses__ 中的任务分发顺序
             for channel in range(num_channels):
                 for ofmap in range(num_ofmaps):
-                    
-                    # 1. 收集当前 (channel, ofmap) 组合下，所有的宽度切片 (e)
                     width_chunks = []
                     for e in range(total_passes):
                         width_chunks.append(np.array(Psum[index]))
-                        index += 1  # 顺序消费 Psum 列表
+                        index += 1  
                         
-                    # 2. 沿着宽度维度 (axis=1) 将切片拼接为完整的一行
-                    # 拼接后的 shape 应为: (self.t, ofmapWidth, ofmapWidth*self.n*self.p)
                     stitched_row = np.concatenate(width_chunks, axis=1)
                     
-                    # 3. 累加到对应的输出通道 (Ofmap) 块中
-                    # 由于最外层是 channel 循环，这里的 += 完美实现了“各个输入通道结果的累加”
                     start_t = ofmap * self.t
                     end_t = start_t + self.t
                     batch_accumulator[start_t:end_t, :, :] += stitched_row
                     
-            # 将当前 batch 处理好的特征图存入最终结果
             OfMaps[batch] = batch_accumulator
             
         self.__SetOfMaps__(OfMaps)
